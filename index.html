@@ -124,12 +124,13 @@
         let player = { hp: 100, maxHp: 100, speed: 15, velocity: new THREE.Vector3(), direction: new THREE.Vector3() };
         let boss = { 
             obj: null, hp: 1000, maxHp: 1000, 
-            state: 'IDLE', // IDLE, ATTACK, FLEE
+            state: 'IDLE', // IDLE, ATTACK, FLEE, DYING
             nextAttackTime: 0,
             moveSpeed: 8
         };
         let projectiles = [];
         let particles = [];
+        let confetti = [];
         let clock = new THREE.Clock();
         let isGameRunning = false;
         let controls;
@@ -405,6 +406,8 @@
             boss.obj.scale.set(6, 6, 1);
             boss.obj.position.set(0, 3, -15);
             scene.add(boss.obj);
+            boss.hp = boss.maxHp;
+            boss.state = 'IDLE';
         }
 
         function createEnvironmentDecor() {
@@ -493,7 +496,7 @@
         }
 
         function bossAttack() {
-            if(!boss.obj) return;
+            if(!boss.obj || boss.state === 'DYING') return;
             
             const text = bossQuotes[Math.floor(Math.random() * bossQuotes.length)];
             const texture = createTextTexture(text, '#000', '#ffcc00');
@@ -538,6 +541,61 @@
             }
         }
 
+        function createConfetti() {
+            const colors = [0xff4757, 0x2ed573, 0x1e90ff, 0xffa502, 0xffffff];
+            const geometry = new THREE.PlaneGeometry(0.5, 0.5);
+            
+            for(let i = 0; i < 200; i++) {
+                const color = colors[Math.floor(Math.random() * colors.length)];
+                const material = new THREE.MeshBasicMaterial({ 
+                    color: color, 
+                    side: THREE.DoubleSide 
+                });
+                const mesh = new THREE.Mesh(geometry, material);
+                
+                // Random position above the player/arena
+                mesh.position.set(
+                    (Math.random() - 0.5) * 100,
+                    20 + Math.random() * 20,
+                    (Math.random() - 0.5) * 100
+                );
+                
+                mesh.rotation.x = Math.random() * Math.PI;
+                mesh.rotation.y = Math.random() * Math.PI;
+                
+                scene.add(mesh);
+                
+                confetti.push({
+                    obj: mesh,
+                    velocity: new THREE.Vector3(
+                        (Math.random() - 0.5) * 5,
+                        -Math.random() * 5 - 2, // Falling down
+                        (Math.random() - 0.5) * 5
+                    ),
+                    rotationSpeed: new THREE.Vector3(
+                        Math.random() * 4,
+                        Math.random() * 4,
+                        Math.random() * 4
+                    )
+                });
+            }
+        }
+
+        function updateConfetti(dt) {
+            for(let i = 0; i < confetti.length; i++) {
+                const c = confetti[i];
+                c.obj.position.add(c.velocity.clone().multiplyScalar(dt));
+                c.obj.rotation.x += c.rotationSpeed.x * dt;
+                c.obj.rotation.y += c.rotationSpeed.y * dt;
+                c.obj.rotation.z += c.rotationSpeed.z * dt;
+                
+                // Reset if it falls too low (looping confetti)
+                if(c.obj.position.y < 0) {
+                    c.obj.position.y = 30;
+                }
+            }
+        }
+
         function createExplosion(pos, color) {
             for(let i=0; i<10; i++) {
                 const geo = new THREE.BoxGeometry(0.2, 0.2, 0.2);
@@ -554,6 +612,29 @@
             }
         }
 
+        function startVictorySequence() {
+            boss.state = 'DYING';
+            boss.hp = 0; // Ensure 0
+            
+            // Create big explosion effect
+            createExplosion(boss.obj.position, 0xffffff);
+            createExplosion(boss.obj.position, 0xffff00);
+            
+            // Spawn Confetti
+            createConfetti();
+            
+            showMessage("大先生「おっと、もうこんな時間か…」");
+
+            // Delay actual game over screen
+            setTimeout(() => {
+                if(boss.obj) {
+                    scene.remove(boss.obj);
+                    boss.obj = null;
+                }
+                gameOver(true);
+            }, 5000); // 5 seconds duration
+        }
+
         function gameOver(win) {
             isGameRunning = false;
             controls.unlock();
@@ -567,7 +648,7 @@
                 if(win) {
                     title.innerText = "MISSION COMPLETE";
                     title.style.color = "#2ed573";
-                    desc.innerText = "大先生は「あとは若手でよろしく」と言い残し、会議室から退出しました。\nプロジェクトの平和は守られました。";
+                    desc.innerText = "大先生は「あとは若手でよろしく」と言い残し、\n定時で颯爽と退社（昇天）していきました。\nプロジェクトの平和は守られました。";
                 } else {
                     title.innerText = "MISSION FAILED";
                     title.style.color = "#ff4757";
@@ -583,7 +664,7 @@
         function animate() {
             requestAnimationFrame(animate);
 
-            if (!isGameRunning) {
+            if (!isGameRunning && boss.state !== 'DYING') {
                 renderer.render(scene, camera);
                 return;
             }
@@ -611,36 +692,49 @@
             camera.position.y = 1.6; // Walking height
             if(camera.position.length() > 90) camera.position.setLength(90);
 
-            // --- Boss AI ---
+            // --- Boss Logic ---
             if (boss.obj) {
-                const distToPlayer = boss.obj.position.distanceTo(camera.position);
-                
-                // Behavior Logic
-                // If HP < 300, Panic Mode (Runs away)
-                const isPanic = boss.hp < 300;
-                
-                if (isPanic) {
-                    boss.obj.material.color.setHex(0xffaaaa); // Red tint
-                    // Move away from player
-                    const runDir = new THREE.Vector3().subVectors(boss.obj.position, camera.position).normalize();
-                    // Stay within arena
-                    if (boss.obj.position.length() > 80) {
-                        // Move sideways if hitting wall
-                        runDir.cross(new THREE.Vector3(0,1,0));
-                    }
-                    boss.obj.position.add(runDir.multiplyScalar(boss.moveSpeed * 2 * dt));
-                } else {
-                    // Move randomly or towards player slowly
-                    boss.obj.position.x += Math.sin(clock.elapsedTime) * 5 * dt;
-                    boss.obj.position.y = 3 + Math.sin(clock.elapsedTime * 2) * 2;
-                }
+                if (boss.state === 'DYING') {
+                    // Victory Animation (Ascension / Leaving work)
+                    boss.obj.position.y += 5.0 * dt; // Float up
+                    boss.obj.material.rotation += 5.0 * dt; // Spin
+                    boss.obj.scale.multiplyScalar(1.0 + 0.5 * dt); // Expand slightly
+                    boss.obj.material.opacity -= 0.2 * dt; // Fade out
+                    
+                    // Update Confetti
+                    updateConfetti(dt);
 
-                // Attack logic
-                if (clock.elapsedTime > boss.nextAttackTime) {
-                    bossAttack();
-                    // Attack faster as HP drops
-                    const attackInterval = isPanic ? 0.5 : (1.0 + (boss.hp / boss.maxHp) * 2.0); 
-                    boss.nextAttackTime = clock.elapsedTime + attackInterval;
+                } else {
+                    // Normal Battle Logic
+                    const distToPlayer = boss.obj.position.distanceTo(camera.position);
+                    
+                    // Behavior Logic
+                    // If HP < 300, Panic Mode (Runs away)
+                    const isPanic = boss.hp < 300;
+                    
+                    if (isPanic) {
+                        boss.obj.material.color.setHex(0xffaaaa); // Red tint
+                        // Move away from player
+                        const runDir = new THREE.Vector3().subVectors(boss.obj.position, camera.position).normalize();
+                        // Stay within arena
+                        if (boss.obj.position.length() > 80) {
+                            // Move sideways if hitting wall
+                            runDir.cross(new THREE.Vector3(0,1,0));
+                        }
+                        boss.obj.position.add(runDir.multiplyScalar(boss.moveSpeed * 2 * dt));
+                    } else {
+                        // Move randomly or towards player slowly
+                        boss.obj.position.x += Math.sin(clock.elapsedTime) * 5 * dt;
+                        boss.obj.position.y = 3 + Math.sin(clock.elapsedTime * 2) * 2;
+                    }
+
+                    // Attack logic
+                    if (clock.elapsedTime > boss.nextAttackTime) {
+                        bossAttack();
+                        // Attack faster as HP drops
+                        const attackInterval = isPanic ? 0.5 : (1.0 + (boss.hp / boss.maxHp) * 2.0); 
+                        boss.nextAttackTime = clock.elapsedTime + attackInterval;
+                    }
                 }
             }
 
@@ -655,7 +749,7 @@
                 let hit = false;
                 
                 // Collision: Player Bullet vs Boss
-                if (p.isPlayer && boss.obj) {
+                if (p.isPlayer && boss.obj && boss.state !== 'DYING') {
                     if (p.obj.position.distanceTo(boss.obj.position) < 3.0) {
                         boss.hp -= p.damage;
                         createExplosion(p.obj.position, 0x00ffff);
@@ -667,13 +761,12 @@
                         
                         // Flash Boss
                         boss.obj.material.opacity = 0.5;
-                        setTimeout(() => { if(boss.obj) boss.obj.material.opacity = 1; }, 100);
+                        setTimeout(() => { 
+                            if(boss.obj && boss.state !== 'DYING') boss.obj.material.opacity = 1; 
+                        }, 100);
 
                         if(boss.hp <= 0) {
-                            createExplosion(boss.obj.position, 0xffaa00);
-                            scene.remove(boss.obj);
-                            boss.obj = null;
-                            gameOver(true);
+                            startVictorySequence();
                         }
                     }
                 }
